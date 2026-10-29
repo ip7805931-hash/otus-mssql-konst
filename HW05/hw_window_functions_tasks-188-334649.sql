@@ -41,88 +41,113 @@ USE WideWorldImporters
 Нарастающий итог должен быть без оконной функции.
 */
 
- set statistics time, io on
-
 USE WideWorldImporters;
 GO
 
+SET STATISTICS TIME, IO ON;
 
-WITH SalesByMonthCTE AS
+;WITH InvoiceSales AS
 (
-    SELECT 
-        Inv.[CustomerID] as Customer,
-        DATEFROMPARTS(YEAR(Inv.[InvoiceDate]), MONTH(Inv.[InvoiceDate]), 1) AS SaleMONTH,
-        SUM(Lines.[ExtendedPrice]) AS TotalExtendedPrice     
-    FROM [Sales].[Invoices] AS Inv
-    LEFT JOIN Sales.InvoiceLines AS Lines ON Inv.InvoiceID = Lines.InvoiceID
-    GROUP BY 
-        Inv.[CustomerID],
-        DATEFROMPARTS(YEAR(Inv.[InvoiceDate]), MONTH(Inv.[InvoiceDate]), 1)
+    SELECT
+        Inv.InvoiceID,
+        Inv.CustomerID,
+        Inv.InvoiceDate,
+        DATEFROMPARTS(
+            YEAR(Inv.InvoiceDate),
+            MONTH(Inv.InvoiceDate),
+            1
+        ) AS SaleMonth,
+        SUM(Lines.ExtendedPrice) AS InvoiceSum
+    FROM Sales.Invoices AS Inv
+    INNER JOIN Sales.InvoiceLines AS Lines
+        ON Lines.InvoiceID = Inv.InvoiceID
+    WHERE Inv.InvoiceDate >= '20150101'
+    GROUP BY
+        Inv.InvoiceID,
+        Inv.CustomerID,
+        Inv.InvoiceDate
+),
+SalesByMonth AS
+(
+    SELECT
+        SaleMonth,
+        SUM(InvoiceSum) AS MonthlySales
+    FROM InvoiceSales
+    GROUP BY SaleMonth
+),
+RunningTotals AS
+(
+    SELECT
+        CurrentMonth.SaleMonth,
+        SUM(PreviousMonth.MonthlySales) AS RunningTotalSales
+    FROM SalesByMonth AS CurrentMonth
+    INNER JOIN SalesByMonth AS PreviousMonth
+        ON PreviousMonth.SaleMonth <= CurrentMonth.SaleMonth
+    GROUP BY CurrentMonth.SaleMonth
 )
-,
-
-TotalSumRuningTab AS
-(
-SELECT 
-    t1.Customer, 
-    t1.SaleMONTH,    
-    SUM(t2.TotalExtendedPrice) AS RunningTotalSales 
-FROM SalesByMonthCTE AS t1
-LEFT JOIN SalesByMonthCTE AS t2 ON t1.Customer = t2.Customer 
-    AND t2.SaleMONTH <= t1.SaleMONTH 
-GROUP BY 
-    t1.Customer, 
-    t1.SaleMONTH
-) 
-
-SELECT 
-    Inv.[InvoiceID],
-    Inv.[CustomerID],
-    Inv.[InvoiceDate],      
-    SUM(Lines.[ExtendedPrice]) AS InvoiceSum, 
-    Cust.[CustomerName],
-    M_Sales.RunningTotalSales AS MonthlyClientSales 
-FROM [Sales].[Invoices] AS Inv
-LEFT JOIN Sales.InvoiceLines AS Lines ON Inv.InvoiceID = Lines.InvoiceID
-LEFT JOIN Sales.Customers AS Cust ON Cust.CustomerID = Inv.CustomerID
-LEFT JOIN TotalSumRuningTab AS M_Sales ON M_Sales.Customer = Inv.CustomerID 
-    AND M_Sales.SaleMONTH = DATEFROMPARTS(YEAR(Inv.[InvoiceDate]), MONTH(Inv.[InvoiceDate]), 1)
-where Inv.[InvoiceDate] > '2015-01-01'
-GROUP BY 
-    Inv.[InvoiceID],
-    Inv.[CustomerID],
-    Inv.[InvoiceDate],
-    Cust.[CustomerName],
-    M_Sales.RunningTotalSales
-ORDER BY 
-    Cust.[CustomerName], 
-    Inv.[InvoiceDate]
-;
+SELECT
+    Inv.InvoiceID,
+    Cust.CustomerName,
+    Inv.InvoiceDate,
+    Inv.InvoiceSum,
+    Totals.RunningTotalSales
+FROM InvoiceSales AS Inv
+INNER JOIN Sales.Customers AS Cust
+    ON Cust.CustomerID = Inv.CustomerID
+INNER JOIN RunningTotals AS Totals
+    ON Totals.SaleMonth = Inv.SaleMonth
+ORDER BY
+    Inv.InvoiceDate,
+    Inv.InvoiceID;
 
 /*
 2. Сделайте расчет суммы нарастающим итогом в предыдущем запросе с помощью оконной функции.
    Сравните производительность запросов 1 и 2 с помощью set statistics time, io on
 */
- set statistics time, io on
+ USE WideWorldImporters;
+GO
 
-SELECT 
-    Inv.[InvoiceID],
-    Inv.[CustomerID],
-    Inv.[InvoiceDate],      
-    
-    SUM(Lines.[ExtendedPrice]) OVER ( PARTITION BY Inv.[CustomerID]
-        ORDER BY DATEFROMPARTS(YEAR(Inv.[InvoiceDate]), MONTH(Inv.[InvoiceDate]), 1)
+SET STATISTICS TIME, IO ON;
+
+;WITH InvoiceSales AS
+(
+    SELECT
+        Inv.InvoiceID,
+        Inv.CustomerID,
+        Inv.InvoiceDate,
+        DATEFROMPARTS(
+            YEAR(Inv.InvoiceDate),
+            MONTH(Inv.InvoiceDate),
+            1
+        ) AS SaleMonth,
+        SUM(Lines.ExtendedPrice) AS InvoiceSum
+    FROM Sales.Invoices AS Inv
+    INNER JOIN Sales.InvoiceLines AS Lines
+        ON Lines.InvoiceID = Inv.InvoiceID
+    WHERE Inv.InvoiceDate >= '20150101'
+    GROUP BY
+        Inv.InvoiceID,
+        Inv.CustomerID,
+        Inv.InvoiceDate
+)
+SELECT
+    Inv.InvoiceID,
+    Cust.CustomerName,
+    Inv.InvoiceDate,
+    Inv.InvoiceSum,
+    SUM(Inv.InvoiceSum) OVER
+    (
+        ORDER BY Inv.SaleMonth
         RANGE BETWEEN UNBOUNDED PRECEDING AND CURRENT ROW
-    ) AS TotalSumRunning,
-    Cust.[CustomerName]
-FROM [Sales].[Invoices] AS Inv
-LEFT JOIN Sales.InvoiceLines AS Lines ON Inv.InvoiceID = Lines.InvoiceID
-LEFT JOIN Sales.Customers AS Cust ON Cust.CustomerID = Inv.CustomerID
-where  Inv.[InvoiceDate] > '2015-01-01'
+    ) AS RunningTotalSales
+FROM InvoiceSales AS Inv
+INNER JOIN Sales.Customers AS Cust
+    ON Cust.CustomerID = Inv.CustomerID
+ORDER BY
+    Inv.InvoiceDate,
+    Inv.InvoiceID;
 
-   ORDER by
-Cust.[CustomerName], Inv.[InvoiceDate], Inv.[InvoiceID];
-
+SET STATISTICS TIME, IO OFF;
 
 
 
@@ -236,32 +261,55 @@ ORDER BY People.FullName;
 */
 
 
-SELECT 
-    TopSale.CustomerID,
-    TopSale.CustomerName,
-    TopSale.StockItemID,
-    TopSale.Price,
-    TopSale.InvoiceDate
-FROM (
+;WITH ProductPurchases AS
+(
     SELECT
         Inv.CustomerID,
-        Cust.CustomerName,      
         Lines.StockItemID,
         Lines.UnitPrice AS Price,
         Inv.InvoiceDate,
-        ROW_NUMBER() OVER (
-            PARTITION BY Inv.CustomerID 
-            ORDER BY Lines.UnitPrice DESC
-        ) AS Num
-    FROM [Sales].[InvoiceLines] AS Lines
-    INNER JOIN [Sales].[Invoices] AS Inv 
-        ON Inv.InvoiceID = Lines.InvoiceID
-    INNER JOIN [Warehouse].[StockItems] AS Goods 
-        ON Goods.StockItemID = Lines.StockItemID
-    INNER JOIN [Sales].[Customers] AS Cust 
-        ON Cust.CustomerID = Inv.CustomerID 
-) AS TopSale
-WHERE TopSale.Num <= 2
-ORDER BY TopSale.CustomerID, TopSale.Num;
-
+        Inv.InvoiceID,
+        Lines.InvoiceLineID,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY Inv.CustomerID, Lines.StockItemID
+            ORDER BY
+                Lines.UnitPrice DESC,
+                Inv.InvoiceDate DESC,
+                Inv.InvoiceID DESC,
+                Lines.InvoiceLineID DESC
+        ) AS PurchaseNum
+    FROM Sales.Invoices AS Inv
+    INNER JOIN Sales.InvoiceLines AS Lines
+        ON Lines.InvoiceID = Inv.InvoiceID
+),
+RankedProducts AS
+(
+    SELECT
+        CustomerID,
+        StockItemID,
+        Price,
+        InvoiceDate,
+        ROW_NUMBER() OVER
+        (
+            PARTITION BY CustomerID
+            ORDER BY Price DESC, StockItemID
+        ) AS ProductNum
+    FROM ProductPurchases
+    WHERE PurchaseNum = 1
+)
+SELECT
+    Products.CustomerID,
+    Cust.CustomerName,
+    Products.StockItemID,
+    Products.Price,
+    Products.InvoiceDate
+FROM RankedProducts AS Products
+INNER JOIN Sales.Customers AS Cust
+    ON Cust.CustomerID = Products.CustomerID
+WHERE Products.ProductNum <= 2
+ORDER BY
+    Products.CustomerID,
+    Products.ProductNum;
+    
 --Опционально можете для каждого запроса без оконных функций сделать вариант запросов с оконными функциями и сравнить их производительность. 
